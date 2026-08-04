@@ -9,11 +9,11 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from time import sleep
 from pprint import pprint
-from freeze_paths import APP_DIR
+from .paths import APP_DIR
 
 from pathlib import Path
 #TODO maybe change that
-# from eval_funcs import *
+# from .eval_funcs import *
 
 
 def rename_df(df): 
@@ -93,64 +93,3 @@ def load_data_dict_hdf(filename="raw_data.h5"):
             key.lstrip("/"): store[key]
             for key in store.keys()
         }
-
-
-import warnings
-import pandas as pd
-
-
-def update_hdf5_from_dict(data_dict, hdf5_path):
-    """
-    Add all DataFrames from data_dict to an HDF5 file.
-
-    Existing keys are not overwritten. They are skipped with a warning.
-
-    Parameters
-    ----------
-    data_dict : dict[str, pd.DataFrame]
-        Dictionary where each key becomes the HDF5 dataset name.
-
-    hdf5_path : str
-        Complete path to the HDF5 file, including the filename.
-    """
-    added = []
-    skipped = []
-
-    with pd.HDFStore(hdf5_path, mode="a") as store:
-        existing_keys = set(store.keys())
-
-        for key, df in data_dict.items():
-            hdf_key = f"/{key.lstrip('/')}"
-
-            if hdf_key in existing_keys:
-                warnings.warn(
-                    f"Key {key!r} already exists in {hdf5_path}. Skipping it.",
-                    UserWarning,
-                )
-                skipped.append(key)
-                continue
-
-            if not isinstance(df, pd.DataFrame):
-                warnings.warn(
-                    f"Value for key {key!r} is not a DataFrame. Skipping it.",
-                    UserWarning,
-                )
-                skipped.append(key)
-                continue
-
-            store.put(
-                key=key,
-                value=df,
-                format="fixed",
-            )
-
-            added.append(key)
-            existing_keys.add(hdf_key)
-
-    print(f"Added: {len(added)} DataFrame(s)")
-    print(f"Skipped: {len(skipped)} DataFrame(s)")
-
-    return {
-        "added": added,
-        "skipped": skipped,
-    }

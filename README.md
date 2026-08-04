@@ -13,12 +13,11 @@ supercooling temperatures, and generates interactive or static plots.
 | `manual_supercooling_dashboard.ipynb` | Focused notebook for loading `data/data_raw/raw_data.h5` and manually annotating spike start, spike maximum, and spike end for each thermocouple channel. |
 | `manual_supercooling_cells.ipynb` | Non-widget manual annotation notebook for frontends that do not render `ipywidgets`; edit normal Python variables and run cells to plot/save events. |
 | `manual_supercooling_click_dashboard.ipynb` | Local click dashboard: choose experiment/channel, click three event points, mark no-clear events, and persist the annotations table. |
-| `data_funcs.py` | Data loading and persistence helpers for Excel and HDF5 workflows. |
-| `eval_funcs.py` | Analysis helpers for cooling rate, spike detection, thermocouple sorting, and supercooling summaries. |
-| `plot_funcs.py` | Plotly visualization helpers for channel traces, experiment comparisons, and spike/supercooling markers. |
-| `freeze_paths.py` | Central path configuration used by the notebook and helper modules. |
+| `src/freezeplots/data_funcs.py` | Data loading and persistence helpers for Excel and HDF5 workflows. |
+| `src/freezeplots/eval_funcs.py` | Analysis helpers for cooling rate, spike detection, thermocouple sorting, and supercooling summaries. |
+| `src/freezeplots/plot_funcs.py` | Plotly visualization helpers for channel traces, experiment comparisons, and spike/supercooling markers. |
+| `src/freezeplots/paths.py` | Central path configuration used by the notebooks and package modules. |
 | `channel_layout.json` | Experiment-specific mapping from `TC` channels to sample or treatment labels. |
-| `probe_layout.py` | Legacy/static probe layout definitions grouped by sample or treatment. |
 | `data/data_raw/` | Raw experiment Excel files such as `EJ01A1.xlsx` through `EJ42B1.xlsx`. |
 | `output/` | Generated CSV data and static plot outputs. |
 | `scripts/iframe_figures/` | Plotly iframe HTML outputs created by notebook rendering. |
@@ -58,15 +57,9 @@ python -m pip install pandas numpy scipy matplotlib seaborn plotly ipywidgets op
 
 ## Path Configuration
 
-`freeze_paths.py` currently hard-codes:
-
-```python
-BASE_DIR = "/home/juk/massey/work/"
-```
-
-If this repository is not located at that path, update `BASE_DIR` before running
-the notebook or helper functions. The modules use `APP_DIR` entries derived from
-that base path:
+`src/freezeplots/paths.py` derives the project root from the installed source
+file, so the repository can be moved without editing a hard-coded path. It also
+provides the legacy `APP_DIR` mapping used by the exploratory notebooks:
 
 - `APP_DIR["data"]`: raw Excel input directory.
 - `APP_DIR["procdata"]`: processed data directory.
@@ -140,18 +133,17 @@ that base path:
 
 | Function | Location | Description |
 | --- | --- | --- |
-| `setup_data_dict()` | `data_funcs.py` | Loads selected raw Excel files into a dictionary of DataFrames. |
-| `cut_elapsed()` | `data_funcs.py` | Filters a DataFrame to an elapsed-time window from the first timestamp. |
-| `save_data_dict_hdf()` | `data_funcs.py` | Saves experiment DataFrames to an HDF5 file. |
-| `load_data_dict_hdf()` | `data_funcs.py` | Loads an HDF5 experiment dictionary. |
-| `update_hdf5_from_dict()` | `data_funcs.py` | Adds new DataFrames to an existing HDF5 file without overwriting existing keys. |
-| `get_cooling_rate()` | `eval_funcs.py` | Calculates cooling rate in `deg C/min` using values between `0` and `5 deg C`. |
-| `detect_anomalies()` | `eval_funcs.py` | Detects positive temperature jumps above a threshold over a row window. |
-| `extract_supercooling()` | `eval_funcs.py` | Finds the first spike and minimum pre-spike temperature for each thermocouple. |
-| `get_supercooling_summary()` | `eval_funcs.py` | Combines per-experiment supercooling summaries into one DataFrame. |
-| `show_channels_by_exp()` | `plot_funcs.py` | Shows all thermocouple traces for each experiment. |
-| `show_comp_exp()` | `plot_funcs.py` | Compares matching thermocouple channels across experiments. |
-| `plot_first_spikes_and_supercooling()` | `plot_funcs.py` | Plots traces with first-spike and supercooling markers. |
+| `setup_data_dict()` | `src/freezeplots/data_funcs.py` | Loads selected raw Excel files into a dictionary of DataFrames. |
+| `cut_elapsed()` | `src/freezeplots/data_funcs.py` | Filters a DataFrame to an elapsed-time window from the first timestamp. |
+| `save_data_dict_hdf()` | `src/freezeplots/data_funcs.py` | Saves experiment DataFrames to an HDF5 file. |
+| `load_data_dict_hdf()` | `src/freezeplots/data_funcs.py` | Loads an HDF5 experiment dictionary. |
+| `get_cooling_rate()` | `src/freezeplots/eval_funcs.py` | Calculates cooling rate in `deg C/min` using values between `0` and `5 deg C`. |
+| `detect_anomalies()` | `src/freezeplots/eval_funcs.py` | Detects positive temperature jumps above a threshold over a row window. |
+| `extract_supercooling()` | `src/freezeplots/eval_funcs.py` | Finds the first spike and minimum pre-spike temperature for each thermocouple. |
+| `get_supercooling_summary()` | `src/freezeplots/eval_funcs.py` | Combines per-experiment supercooling summaries into one DataFrame. |
+| `show_channels_by_exp()` | `src/freezeplots/plot_funcs.py` | Shows all thermocouple traces for each experiment. |
+| `show_comp_exp()` | `src/freezeplots/plot_funcs.py` | Compares matching thermocouple channels across experiments. |
+| `plot_first_spikes_and_supercooling()` | `src/freezeplots/plot_funcs.py` | Plots traces with first-spike and supercooling markers. |
 
 ## Outputs
 

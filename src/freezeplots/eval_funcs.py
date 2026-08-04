@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
-# from data_funcs import *
+# from .data_funcs import *
 
 def get_cooling_rate(df):
     """
@@ -270,4 +270,3 @@ def extract_supercooling(df, spike_times_dict, dataset_name):
         )
 
     return pd.DataFrame(records)
-

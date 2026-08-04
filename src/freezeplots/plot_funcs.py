@@ -4,10 +4,10 @@ import matplotlib as plt
 import seaborn as sns
 pio.renderers.default = "iframe"
 from time import sleep
-from freeze_paths import APP_DIR
+from .paths import APP_DIR
 import json
 
-from eval_funcs import *
+from .eval_funcs import *
 
 with open("channel_layout.json", "r", encoding="utf-8") as file:
     channel_layout = json.load(file)
@@ -209,4 +209,3 @@ def plot_first_spikes_and_supercooling(
     fig.show()
 
     return fig
-

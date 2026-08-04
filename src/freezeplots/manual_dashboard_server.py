@@ -11,9 +11,15 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import pandas as pd
 import plotly.offline as plotly_offline
 
-from data_funcs import convert_time, load_data_dict_hdf, rename_df
-from eval_funcs import get_tc_columns
-from freeze_paths import APP_DIR
+from .data_funcs import convert_time, load_data_dict_hdf, rename_df
+from .eval_funcs import get_tc_columns
+from .paths import (
+    CHANNEL_LAYOUT_PATH,
+    OUTPUT_DIR,
+    PROC_DATA_DIR,
+    PROJECT_ROOT,
+    RAW_DATA_DIR,
+)
 
 
 ANNOTATION_COLUMNS = [
@@ -31,12 +37,12 @@ ANNOTATION_COLUMNS = [
 
 
 def _default_annotations_path():
-    return Path(APP_DIR["data"]) / "manual_supercooling_events.csv"
+    return PROC_DATA_DIR / "manual_supercooling_events.csv"
 
 
 class ManualDashboardState:
     def __init__(self, hdf5_path=None, annotations_path=None):
-        self.hdf5_path = Path(hdf5_path or Path(APP_DIR["procdata"]) / "raw_data.h5")
+        self.hdf5_path = Path(hdf5_path or RAW_DATA_DIR / "raw_data.h5")
         self.annotations_path = Path(annotations_path or _default_annotations_path())
         self.data_dict = load_data_dict_hdf(str(self.hdf5_path))
         self.channel_layout = self._load_channel_layout()
@@ -44,14 +50,14 @@ class ManualDashboardState:
         self._migrate_legacy_annotations()
 
     def _migrate_legacy_annotations(self):
-        legacy_path = Path(APP_DIR["output"]) / "manual_supercooling_events.csv"
+        legacy_path = OUTPUT_DIR / "manual_supercooling_events.csv"
         if self.annotations_path.exists() or not legacy_path.exists():
             return
         self.annotations_path.parent.mkdir(parents=True, exist_ok=True)
         self.annotations_path.write_text(legacy_path.read_text())
 
     def _load_channel_layout(self):
-        path = Path("channel_layout.json")
+        path = CHANNEL_LAYOUT_PATH
         if not path.exists():
             return {}
         with path.open("r", encoding="utf-8") as file:
@@ -61,7 +67,7 @@ class ManualDashboardState:
         return sorted(self.data_dict.keys())
 
     def raw_xlsx_experiments(self):
-        data_dir = Path(APP_DIR["data"])
+        data_dir = RAW_DATA_DIR
         return sorted(
             path.stem
             for path in data_dir.glob("*.xlsx")
@@ -79,7 +85,7 @@ class ManualDashboardState:
         missing = [experiment_id for experiment_id in raw if experiment_id not in set(existing)]
         return {
             "hdf5_path": str(self.hdf5_path),
-            "data_raw_dir": str(Path(APP_DIR["data"])),
+            "data_raw_dir": str(RAW_DATA_DIR),
             "raw_xlsx_count": len(raw),
             "hdf5_experiment_count": len(existing),
             "missing": missing,
@@ -100,7 +106,7 @@ class ManualDashboardState:
                 existing_keys = set(store.keys())
 
                 for experiment_id in missing:
-                    xlsx_path = Path(APP_DIR["data"]) / f"{experiment_id}.xlsx"
+                    xlsx_path = RAW_DATA_DIR / f"{experiment_id}.xlsx"
                     try:
                         df = pd.read_excel(xlsx_path, header=6)
                         df = rename_df(df)
@@ -160,7 +166,7 @@ class ManualDashboardState:
     def set_annotations_path(self, annotations_path):
         path = Path(annotations_path).expanduser()
         if not path.is_absolute():
-            path = Path(APP_DIR["base"]) / path
+            path = PROJECT_ROOT / path
         with self.lock:
             self.annotations_path = path
             df = self.annotations()
