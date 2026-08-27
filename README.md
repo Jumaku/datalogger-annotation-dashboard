@@ -17,9 +17,25 @@ python -m pip install -r requirements.txt
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
 
-## Add data
+## Prepare experiment data
 
-Place the raw `.xlsx` experiment files in:
+Before adding Excel files, update `channel_layout.json`. Each experiment ID must
+contain the labels describing its thermologger channels, for example:
+
+```json
+{
+  "EJ01A1": {
+    "TC1": "Sample A",
+    "TC2": "Sample B"
+  }
+}
+```
+
+Name each Excel file after its experiment ID. The filename, without `.xlsx`,
+must exactly match the experiment ID in `channel_layout.json`. For the example
+above, the corresponding file must be named `EJ01A1.xlsx`.
+
+After updating the channel layout, place the raw `.xlsx` files in:
 
 ```text
 data/data_raw/
