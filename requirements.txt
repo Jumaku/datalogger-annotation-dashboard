@@ -1,0 +1,6 @@
+# Install the local freezeplots package and dashboard dependencies.
+-e .
+openpyxl
+plotly
+seaborn
+tables

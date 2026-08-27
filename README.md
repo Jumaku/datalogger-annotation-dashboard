@@ -12,7 +12,7 @@ environment and install the project with its dashboard dependencies:
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e . openpyxl plotly seaborn tables
+python -m pip install -r requirements.txt
 ```
 
 On Windows, activate the environment with `.venv\Scripts\activate` instead.
