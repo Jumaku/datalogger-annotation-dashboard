@@ -3,7 +3,6 @@
 *.log
 tmp/
 __pycache__/
-*.xlsx
 *.png
 old/
 .*/
