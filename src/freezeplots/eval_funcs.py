@@ -11,9 +11,15 @@ def get_cooling_rate(df):
     """
     Get cooling rate from passed DataFrame in °C/min.
 
-    Cooling rate is calculated using values in the range:
+    Cooling rate is calculated from the first downward passage through:
 
-        0 °C < TC < 5 °C
+        5 °C >= TC >= 0 °C
+
+    The passage begins when the trajectory crosses below 5 °C after being
+    at or above 5 °C, and ends when it first reaches 0 °C. A least-squares
+    linear regression through the measurements in that interval supplies the
+    cooling rate. Restricting the calculation to the first passage prevents a
+    later thaw or post-freezing return to 0--5 °C from flattening the rate.
 
     Parameters
     ----------
@@ -29,46 +35,126 @@ def get_cooling_rate(df):
         Returned if no suitable temperature range is found.
     """
 
-    temp = df.loc[
-        (df["TC"] > 0) & (df["TC"] < 5),
-        ["Time", "TC"],
-    ].copy()
+    required_columns = {"Time", "TC"}
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        raise KeyError(
+            "The DataFrame is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    temp = df.loc[:, ["Time", "TC"]].copy()
+    temp["Time"] = pd.to_numeric(temp["Time"], errors="coerce")
+    temp["TC"] = pd.to_numeric(temp["TC"], errors="coerce")
+    temp = temp.dropna(subset=["Time", "TC"]).sort_values(
+        "Time",
+        kind="stable",
+    ).reset_index(drop=True)
 
     if temp.empty:
         warnings.warn(
-            "No temperature values in the range 0 °C < TC < 5 °C were found.",
+            "No valid time and temperature values were found.",
             UserWarning,
         )
         return np.nan
 
-    if len(temp) < 2:
+    previous_temperature = temp["TC"].shift()
+    downward_crossings = (
+        previous_temperature.ge(5)
+        & temp["TC"].lt(5)
+        & temp["TC"].lt(previous_temperature)
+    )
+
+    cooling_passage = None
+
+    for start_position in np.flatnonzero(downward_crossings.to_numpy()):
+        if temp.at[start_position, "TC"] < 0:
+            continue
+
+        later_positions = np.arange(len(temp)) > start_position
+        passage_exits = np.flatnonzero(
+            later_positions
+            & (
+                temp["TC"].le(0).to_numpy()
+                | temp["TC"].gt(5).to_numpy()
+            )
+        )
+        if not len(passage_exits):
+            continue
+
+        end_position = int(passage_exits[0])
+        if temp.at[end_position, "TC"] > 5:
+            continue
+
+        candidate = temp.iloc[start_position : end_position + 1]
+        candidate = candidate.loc[
+            candidate["TC"].between(0, 5, inclusive="both")
+        ].copy()
+        if len(candidate) >= 2:
+            cooling_passage = candidate
+            break
+
+    if cooling_passage is None:
+        in_cooling_range = temp["TC"].between(0, 5, inclusive="both")
+        range_starts = np.flatnonzero(
+            in_cooling_range.to_numpy()
+            & ~in_cooling_range.shift(fill_value=False).to_numpy()
+        )
+
+        for start_position in range_starts:
+            later_outside_range = np.flatnonzero(
+                (np.arange(len(temp)) > start_position)
+                & ~in_cooling_range.to_numpy()
+            )
+            end_position = (
+                int(later_outside_range[0])
+                if len(later_outside_range)
+                else len(temp)
+            )
+            candidate = temp.iloc[start_position:end_position].copy()
+            if len(candidate) >= 2:
+                cooling_passage = candidate
+                warnings.warn(
+                    "No complete downward 5--0 °C passage was found; "
+                    "using the first usable contiguous interval in that range.",
+                    UserWarning,
+                )
+                break
+
+    if cooling_passage is None:
         warnings.warn(
-            "Only one temperature value was found in the range "
-            "0 °C < TC < 5 °C. Cooling rate cannot be calculated.",
+            "No usable temperature passage in the range "
+            "0 °C <= TC <= 5 °C was found.",
+            UserWarning,
+        )
+        return np.nan
+
+    if len(cooling_passage) < 2:
+        warnings.warn(
+            "Fewer than two measurements were found during the first "
+            "5--0 °C cooling passage. Cooling rate cannot be calculated.",
             UserWarning,
         )
         return np.nan
 
     # Convert seconds to minutes
-    temp["Time"] = temp["Time"] / 60
+    time_minutes = cooling_passage["Time"].to_numpy(dtype=float) / 60
+    temperatures = cooling_passage["TC"].to_numpy(dtype=float)
+    centered_time = time_minutes - time_minutes.mean()
+    denominator = np.dot(centered_time, centered_time)
 
-    x1 = temp["Time"].iloc[0]
-    y1 = temp["TC"].iloc[0]
-
-    x2 = temp["Time"].iloc[-1]
-    y2 = temp["TC"].iloc[-1]
-
-    if x2 == x1:
+    if denominator == 0:
         warnings.warn(
-            "The first and last time values are identical. "
+            "The cooling-passage time values are identical. "
             "Cooling rate cannot be calculated.",
             UserWarning,
         )
         return np.nan
 
-    cooling_rate = (y2 - y1) / (x2 - x1)
+    centered_temperature = temperatures - temperatures.mean()
+    cooling_rate = np.dot(centered_time, centered_temperature) / denominator
 
-    return cooling_rate
+    return float(cooling_rate)
 
     
 def detect_anomalies(df, threshold, window):

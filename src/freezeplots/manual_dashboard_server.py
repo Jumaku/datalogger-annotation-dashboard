@@ -3,6 +3,8 @@ import math
 import os
 import threading
 import urllib.parse
+import warnings
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,10 +14,9 @@ import pandas as pd
 import plotly.offline as plotly_offline
 
 from .data_funcs import convert_time, load_data_dict_hdf, rename_df
-from .eval_funcs import get_tc_columns
+from .eval_funcs import get_cooling_rate, get_tc_columns
 from .paths import (
     CHANNEL_LAYOUT_PATH,
-    OUTPUT_DIR,
     PROC_DATA_DIR,
     PROJECT_ROOT,
     RAW_DATA_DIR,
@@ -32,29 +33,40 @@ ANNOTATION_COLUMNS = [
     "maximum_temp_c",
     "end_time_min",
     "end_temp_c",
+    "min_temp_overall_c",
+    "cooling_rate_c_per_min",
     "notes",
+]
+
+ANNOTATION_NUMERIC_COLUMNS = [
+    "start_time_min",
+    "start_temp_c",
+    "maximum_time_min",
+    "maximum_temp_c",
+    "end_time_min",
+    "end_temp_c",
+    "min_temp_overall_c",
+    "cooling_rate_c_per_min",
 ]
 
 
 def _default_annotations_path():
-    return PROC_DATA_DIR / "manual_supercooling_events.csv"
+    existing_paths = sorted(PROC_DATA_DIR.glob("supercooling_events_????-??-??.csv"))
+    if existing_paths:
+        return existing_paths[-1]
+    return PROC_DATA_DIR / f"supercooling_events_{date.today().isoformat()}.csv"
 
 
 class ManualDashboardState:
     def __init__(self, hdf5_path=None, annotations_path=None):
-        self.hdf5_path = Path(hdf5_path or RAW_DATA_DIR / "raw_data.h5")
+        self.hdf5_path = Path(hdf5_path or PROC_DATA_DIR / "raw_data.h5")
         self.annotations_path = Path(annotations_path or _default_annotations_path())
-        self.data_dict = load_data_dict_hdf(str(self.hdf5_path))
-        self.channel_layout = self._load_channel_layout()
         self.lock = threading.Lock()
-        self._migrate_legacy_annotations()
-
-    def _migrate_legacy_annotations(self):
-        legacy_path = OUTPUT_DIR / "manual_supercooling_events.csv"
-        if self.annotations_path.exists() or not legacy_path.exists():
-            return
-        self.annotations_path.parent.mkdir(parents=True, exist_ok=True)
-        self.annotations_path.write_text(legacy_path.read_text())
+        self.data_dict = {}
+        if self.hdf5_path.exists():
+            self.data_dict = load_data_dict_hdf(str(self.hdf5_path))
+        self.channel_layout = self._load_channel_layout()
+        self._refresh_annotation_metrics()
 
     def _load_channel_layout(self):
         path = CHANNEL_LAYOUT_PATH
@@ -85,6 +97,7 @@ class ManualDashboardState:
         missing = [experiment_id for experiment_id in raw if experiment_id not in set(existing)]
         return {
             "hdf5_path": str(self.hdf5_path),
+            "hdf5_exists": self.hdf5_path.exists(),
             "data_raw_dir": str(RAW_DATA_DIR),
             "raw_xlsx_count": len(raw),
             "hdf5_experiment_count": len(existing),
@@ -97,6 +110,7 @@ class ManualDashboardState:
             added = []
             errors = []
 
+            self.hdf5_path.parent.mkdir(parents=True, exist_ok=True)
             with pd.HDFStore(
                 str(self.hdf5_path),
                 mode="a",
@@ -156,6 +170,56 @@ class ManualDashboardState:
             "temperature_c": trace[channel].round(6).tolist(),
         }
 
+    def trajectory_metrics(self, experiment_id, channel):
+        df = self.data_dict[experiment_id]
+        trajectory = df[["Time", channel]].rename(columns={channel: "TC"})
+
+        min_temp_overall = pd.to_numeric(
+            trajectory["TC"],
+            errors="coerce",
+        ).min()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            cooling_rate = get_cooling_rate(trajectory)
+
+        return {
+            "min_temp_overall_c": _clean_float(min_temp_overall),
+            "cooling_rate_c_per_min": _clean_float(cooling_rate),
+        }
+
+    def _refresh_annotation_metrics(self):
+        if not self.annotations_path.exists():
+            return
+
+        source_df = pd.read_csv(self.annotations_path)
+        had_metric_columns = {
+            "min_temp_overall_c",
+            "cooling_rate_c_per_min",
+        }.issubset(source_df.columns)
+        df = _normalize_annotations(source_df.reindex(columns=ANNOTATION_COLUMNS))
+        changed = not had_metric_columns
+
+        for index, row in df.iterrows():
+            experiment_id = str(row["experiment_id"])
+            channel = str(row["channel"])
+            if (
+                experiment_id not in self.data_dict
+                or channel not in self.data_dict[experiment_id].columns
+            ):
+                continue
+
+            metrics = self.trajectory_metrics(experiment_id, channel)
+            for column, value in metrics.items():
+                current_value = df.at[index, column]
+                if not _numeric_values_equal(current_value, value):
+                    df.at[index, column] = value
+                    changed = True
+
+        if changed:
+            self.annotations_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(self.annotations_path, index=False)
+
     def annotations(self):
         if self.annotations_path.exists():
             df = pd.read_csv(self.annotations_path)
@@ -169,6 +233,7 @@ class ManualDashboardState:
             path = PROJECT_ROOT / path
         with self.lock:
             self.annotations_path = path
+            self._refresh_annotation_metrics()
             df = self.annotations()
         return df
 
@@ -178,14 +243,14 @@ class ManualDashboardState:
         clean_row["channel"] = str(clean_row["channel"])
         clean_row["no_clear_event"] = _clean_bool(clean_row.get("no_clear_event", False))
 
-        for column in [
-            "start_time_min",
-            "start_temp_c",
-            "maximum_time_min",
-            "maximum_temp_c",
-            "end_time_min",
-            "end_temp_c",
-        ]:
+        clean_row.update(
+            self.trajectory_metrics(
+                clean_row["experiment_id"],
+                clean_row["channel"],
+            )
+        )
+
+        for column in ANNOTATION_NUMERIC_COLUMNS:
             clean_row[column] = _clean_float(clean_row.get(column))
 
         with self.lock:
@@ -226,6 +291,14 @@ def _clean_float(value):
         return math.nan
 
 
+def _numeric_values_equal(left, right):
+    if pd.isna(left) and pd.isna(right):
+        return True
+    if pd.isna(left) or pd.isna(right):
+        return False
+    return math.isclose(float(left), float(right), rel_tol=1e-12, abs_tol=1e-12)
+
+
 def _clean_bool(value):
     if isinstance(value, bool):
         return value
@@ -240,14 +313,7 @@ def _normalize_annotations(df):
     df = df.copy()
     if "no_clear_event" in df.columns:
         df["no_clear_event"] = df["no_clear_event"].map(_clean_bool)
-    for column in [
-        "start_time_min",
-        "start_temp_c",
-        "maximum_time_min",
-        "maximum_temp_c",
-        "end_time_min",
-        "end_temp_c",
-    ]:
+    for column in ANNOTATION_NUMERIC_COLUMNS:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
@@ -668,9 +734,14 @@ async function init() {
     .map(exp => `<option value="${exp}">${exp}</option>`)
     .join("");
   await loadAnnotations();
-  await loadChannels();
   bindEvents();
-  status("Ready");
+  if (payload.experiments.length) {
+    await loadChannels();
+    status("Ready");
+  } else {
+    el("channel").innerHTML = "";
+    status("No H5 data loaded. Check the raw-data message above.");
+  }
 }
 
 function bindEvents() {
@@ -700,8 +771,12 @@ async function refreshExperiments(preferredExperiment=null) {
     .join("");
   if (selected) {
     el("experiment").value = selected;
+    await loadChannels();
+  } else {
+    el("channel").innerHTML = "";
+    traceData = null;
+    status("No H5 data loaded. Check the raw-data message above.");
   }
-  await loadChannels();
 }
 
 async function refreshRawDataStatus() {
@@ -712,22 +787,44 @@ async function refreshRawDataStatus() {
 
 function renderRawDataStatus(payload) {
   const missing = payload.missing || [];
-  el("raw-data-status").textContent =
-    `${payload.raw_xlsx_count} .xlsx files in ${payload.data_raw_dir}; `
-    + `${payload.hdf5_experiment_count} experiments in ${payload.hdf5_path}.`;
-  el("missing-experiments").classList.toggle("ok", missing.length === 0);
-  el("missing-experiments").classList.toggle("warning", missing.length > 0);
-  el("missing-experiments").textContent = missing.length
-    ? `Missing in HDF5: ${missing.join(", ")}`
-    : "HDF5 is up to date with data_raw.";
-  el("add-missing-raw").style.display = missing.length ? "" : "none";
+  const button = el("add-missing-raw");
+  el("raw-data-status").textContent = `${payload.raw_xlsx_count} .xlsx files in ${payload.data_raw_dir}.`;
+
+  if (payload.raw_xlsx_count === 0) {
+    el("missing-experiments").textContent =
+      `No .xlsx files found. Add raw Excel files to ${payload.data_raw_dir} and check again.`;
+    el("missing-experiments").className = "warning";
+    button.style.display = "none";
+  } else if (!payload.hdf5_exists) {
+    el("missing-experiments").textContent =
+      `No H5 file exists at ${payload.hdf5_path}. Create it from the raw Excel files.`;
+    el("missing-experiments").className = "warning";
+    button.textContent = "Create H5 file";
+    button.style.display = "";
+  } else if (missing.length) {
+    el("missing-experiments").textContent = `Missing in H5: ${missing.join(", ")}`;
+    el("missing-experiments").className = "warning";
+    button.textContent = "Add missing experiments to H5";
+    button.style.display = "";
+  } else {
+    el("missing-experiments").textContent =
+      `H5 is up to date (${payload.hdf5_experiment_count} experiments in ${payload.hdf5_path}).`;
+    el("missing-experiments").className = "ok";
+    button.style.display = "none";
+  }
 }
 
 async function addMissingRawExperiments() {
   const button = el("add-missing-raw");
   const currentExperiment = el("experiment").value;
+  const creatingHdf5 = button.textContent === "Create H5 file";
+  const originalButtonText = button.textContent;
   button.disabled = true;
-  el("missing-experiments").textContent = "Adding missing experiments to HDF5...";
+  button.textContent = "Processing...";
+  button.setAttribute("aria-busy", "true");
+  el("missing-experiments").textContent = creatingHdf5
+    ? "Processing... Creating H5 file from raw Excel files. This may take a moment."
+    : "Processing... Adding missing experiments to H5. This may take a moment.";
   try {
     const payload = await api("/api/add-missing-raw", {
       method: "POST",
@@ -745,14 +842,15 @@ async function addMissingRawExperiments() {
     } else {
       el("missing-experiments").textContent =
         added.length
-          ? `Added to HDF5: ${added.join(", ")}`
+          ? `${creatingHdf5 ? "Created H5 with" : "Added to H5"}: ${added.join(", ")}`
           : "No missing experiments to add.";
     }
   } catch (error) {
     el("missing-experiments").textContent = `Failed to add missing experiments: ${error.message}`;
+    button.textContent = originalButtonText;
   } finally {
     button.disabled = false;
-    await refreshRawDataStatus();
+    button.removeAttribute("aria-busy");
   }
 }
 
@@ -976,7 +1074,7 @@ async function saveCurrent() {
     await postAnnotationAndAdvance(row, exp, ch);
   } catch (error) {
     status(`Save failed: ${error.message}`);
-    el("save-status").textContent = "";
+    setChannelState(`Save failed: ${error.message}`, "no-clear-state");
   } finally {
     setSaving(false);
   }
@@ -999,7 +1097,7 @@ async function saveNoClear() {
     );
   } catch (error) {
     status(`Save failed: ${error.message}`);
-    el("save-status").textContent = "";
+    setChannelState(`Save failed: ${error.message}`, "no-clear-state");
   } finally {
     setSaving(false);
   }
@@ -1011,8 +1109,6 @@ function setSaving(isSaving) {
 }
 
 async function postAnnotationAndAdvance(row, savedExp, savedChannel) {
-  upsertLocalAnnotation(row);
-  renderTable();
   el("save-status").textContent = `Saving ${savedExp} ${savedChannel}...`;
   const payload = await api("/api/annotations", {
     method: "POST",
@@ -1020,6 +1116,7 @@ async function postAnnotationAndAdvance(row, savedExp, savedChannel) {
     body: JSON.stringify(row)
   });
   annotationsPath = payload.path || annotationsPath;
+  el("csv-path").value = annotationsPath;
   annotations = payload.rows || [];
   renderTable();
   const nextChannel = await stepChannel(1);
@@ -1028,32 +1125,9 @@ async function postAnnotationAndAdvance(row, savedExp, savedChannel) {
   el("save-status").textContent = `${action} row ${rowIndex} for ${savedExp} ${savedChannel}; now showing ${el("experiment").value} ${nextChannel}.`;
 }
 
-function upsertLocalAnnotation(row) {
-  const existingIndex = annotations.findIndex(existing =>
-    String(existing.experiment_id) === String(row.experiment_id)
-    && String(existing.channel) === String(row.channel)
-  );
-  const normalized = {
-    experiment_id: row.experiment_id,
-    channel: row.channel,
-    no_clear_event: Boolean(row.no_clear_event),
-    start_time_min: row.start_time_min ?? null,
-    start_temp_c: row.start_temp_c ?? null,
-    maximum_time_min: row.maximum_time_min ?? null,
-    maximum_temp_c: row.maximum_temp_c ?? null,
-    end_time_min: row.end_time_min ?? null,
-    end_temp_c: row.end_temp_c ?? null,
-    notes: row.notes ?? ""
-  };
-  if (existingIndex >= 0) {
-    annotations[existingIndex] = normalized;
-  } else {
-    annotations.push(normalized);
-  }
-}
-
 async function stepChannel(offset) {
   const select = el("channel");
+  if (!select.options.length) return "";
   const next = (select.selectedIndex + offset + select.options.length) % select.options.length;
   select.selectedIndex = next;
   await loadTraceFor(el("experiment").value, select.value);
@@ -1065,7 +1139,8 @@ function renderTable() {
     "experiment_id", "channel", "no_clear_event",
     "start_time_min", "start_temp_c",
     "maximum_time_min", "maximum_temp_c",
-    "end_time_min", "end_temp_c", "notes"
+    "end_time_min", "end_temp_c",
+    "min_temp_overall_c", "cooling_rate_c_per_min", "notes"
   ];
   const header = `<thead><tr>${columns.map(col => `<th>${col}</th>`).join("")}</tr></thead>`;
   const body = `<tbody>${annotations.map(row => (
